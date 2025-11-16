@@ -7,6 +7,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   BookOpen,
   ChevronRight,
+  ChevronLeft,
+  Menu,
+  X,
   Loader2,
   MessageCircle,
   Trophy,
@@ -23,10 +26,15 @@ import {
   CheckCircle2,
   Sparkles,
   Users,
-  ArrowRight
+  ArrowRight,
+  Search,
+  FileText,
+  ExternalLink,
+  Plus
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { contentFormatter, EmbeddedContent } from '@/services/contentFormatter';
+import QuizComponent from '@/components/QuizComponent';
 
 interface Chapter {
   id: string;
@@ -98,6 +106,47 @@ const LessonWorkspace: React.FC = () => {
     messages: 0
   });
 
+  // Saved Lessons State
+  const [isLessonSaved, setIsLessonSaved] = useState(false);
+  const [savedLessonId, setSavedLessonId] = useState<string | null>(null);
+  const [savingLesson, setSavingLesson] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
+  // Cache for generated lessons (session-based)
+  const [lessonCache, setLessonCache] = useState<Record<string, any>>({});
+
+  // TTS State
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Knowledge Base Enhancement State
+  const [selectedKnowledgeBases, setSelectedKnowledgeBases] = useState<string[]>([]);
+  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<any[]>([]);
+  const [showKbSelector, setShowKbSelector] = useState(false);
+  const [kbSearchQuery, setKbSearchQuery] = useState('');
+  const [kbFilterFavorites, setKbFilterFavorites] = useState(false);
+  const [filteredKnowledgeBases, setFilteredKnowledgeBases] = useState<any[]>([]);
+  const [loadingKbs, setLoadingKbs] = useState(false);
+
+  // Mobile UI State
+  const [isMobile, setIsMobile] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+
+  // Detect mobile screen size
+  useEffect(() => {
+    const checkScreenSize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+
+    checkScreenSize();
+    window.addEventListener('resize', checkScreenSize);
+    return () => window.removeEventListener('resize', checkScreenSize);
+  }, []);
+
   useEffect(() => {
     if (documentId && user) {
       fetchChapters();
@@ -135,7 +184,7 @@ const LessonWorkspace: React.FC = () => {
         }));
         setChapters(transformedChapters);
         if (transformedChapters.length > 0) {
-          handleChapterSelect(transformedChapters[0]);
+          handleChapterSelect(transformedChapters[0], false); // false = don't force regenerate
         }
       }
     } catch (error) {
@@ -198,19 +247,36 @@ const LessonWorkspace: React.FC = () => {
     }
   };
 
-  const handleChapterSelect = async (chapter: Chapter) => {
+  const handleChapterSelect = async (chapter: Chapter, forceRegenerate: boolean = false) => {
     setSelectedChapter(chapter);
-    setGeneratingLesson(true);
     setShowQuiz(false);
-    setEmbeddedContent([]);
-    setEnhancedLesson(null);
+
+    // Create cache key based on chapter and teaching style
+    const cacheKey = `${chapter.id}-${teachingStyle}-${selectedKnowledgeBases.sort().join(',')}`;
+
+    // Check cache first (unless force regenerating)
+    if (!forceRegenerate && lessonCache[cacheKey]) {
+      console.log('✅ Using cached enhanced lesson');
+      const cachedLesson = lessonCache[cacheKey];
+      setEnhancedLesson(cachedLesson.enhancedLesson);
+      setIsLessonSaved(true);
+      setSavedLessonId(cachedLesson.savedLessonId);
+      setAudioUrl(cachedLesson.audioUrl);
+      setAudioDuration(cachedLesson.audioDuration || 0);
+      setEmbeddedContent(cachedLesson.embedded);
+      setSelectedChapter({ ...chapter, content: cachedLesson.formattedContent });
+      setGeneratingLesson(false);
+      return;
+    }
+
+    setGeneratingLesson(true);
 
     try {
       console.log(`🎓 Loading AI-enhanced lesson with ${teachingStyle} style...`);
 
-      // Get AI-enhanced lesson
-      const response = await fetch(
-        `http://localhost:4000/api/learning/enhanced-chapter/${chapter.id}?userId=${user?.id}&teachingStyle=${teachingStyle}`,
+      // First, check if we have a saved enhanced lesson in database
+      const savedResponse = await fetch(
+        `http://localhost:4000/api/learning/saved-enhanced-lesson/${chapter.id}?userId=${user?.id}&teachingStyle=${teachingStyle}`,
         {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -218,101 +284,171 @@ const LessonWorkspace: React.FC = () => {
         }
       );
 
-      const data = await response.json();
+      const savedData = await savedResponse.json();
 
-      if (data.success && data.enhancedLesson) {
-        setEnhancedLesson(data.enhancedLesson);
-
-        // Create embedded content from the enhanced lesson's sections
-        const embedded: EmbeddedContent[] = [];
-        const originalContent = data.originalChapter.content;
-
-        // Add contextual quizzes from the enhanced lesson's quickQuiz
-        if (data.enhancedLesson.quickQuiz && data.enhancedLesson.quickQuiz.length > 0) {
-          const quizPositions = contentFormatter.generateQuizInsertionPoints(originalContent);
-          data.enhancedLesson.quickQuiz.forEach((quiz: any, index: number) => {
-            if (index < quizPositions.length) {
-              embedded.push({
-                type: 'quiz',
-                position: quizPositions[index],
-                data: {
-                  question: quiz.question,
-                  options: quiz.options,
-                  correctAnswer: quiz.correctAnswer,
-                  explanation: quiz.explanation
-                }
-              });
-            }
-          });
-        }
-
-        // Generate images
-        const imagePositions = contentFormatter.generateImageInsertionPoints(originalContent);
-        imagePositions.forEach((pos, index) => {
-          embedded.push({
-            type: 'image',
-            position: pos,
-            data: {
-              url: `https://via.placeholder.com/800x400/4f46e5/ffffff?text=Visual+Concept+${index + 1}`,
-              title: `Visual Concept ${index + 1}`,
-              caption: `Visual representation of key concepts`
-            }
-          });
-        });
-
-        setEmbeddedContent(embedded);
-
-        // ⭐ DISPLAY ENHANCED CONTENT (not original!)
-        // This is the key change - we use the enhanced sections, not the original content
-        if (data.enhancedLesson.enhancedSections && data.enhancedLesson.enhancedSections.length > 0) {
-          const formattedContent = contentFormatter.formatEnhancedContent(
-            data.enhancedLesson.enhancedSections,
-            embedded
-          );
-          setSelectedChapter({ ...chapter, content: formattedContent });
-        } else {
-          // Fallback to original content if no enhanced sections
-          const formattedContent = contentFormatter.formatContent(originalContent, embedded);
-          setSelectedChapter({ ...chapter, content: formattedContent });
-        }
+      if (savedData.success && savedData.lesson) {
+        // Use saved lesson
+        console.log('✅ Using saved enhanced lesson from database');
+        await loadLessonData(chapter, savedData.lesson, null);
       } else {
-        // Fallback to original content
-        const embedded: EmbeddedContent[] = [];
-        const imagePositions = contentFormatter.generateImageInsertionPoints(chapter.content);
-        imagePositions.forEach((pos, index) => {
-          embedded.push({
-            type: 'image',
-            position: pos,
-            data: {
-              url: `https://via.placeholder.com/800x400/4f46e5/ffffff?text=Visual+Concept+${index + 1}`,
-              title: `Visual Concept ${index + 1}`,
-              caption: `Visual representation`
-            }
-          });
-        });
-        setEmbeddedContent(embedded);
-        const formattedContent = contentFormatter.formatContent(chapter.content, embedded);
-        setSelectedChapter({ ...chapter, content: formattedContent });
-      }
+        // Generate new enhanced lesson ONLY if not in cache
+        console.log(forceRegenerate ? '🔄 Regenerating enhanced lesson...' : '🆕 Generating new enhanced lesson...');
 
-      // Start study session
-      await fetch('http://localhost:4000/api/learning/start-session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify({ userId: user?.id, chapterId: chapter.id })
-      });
+        const useKB = selectedKnowledgeBases.length > 0;
+        const endpoint = useKB
+          ? 'http://localhost:4000/api/learning/generate-enhanced-lesson-with-kb'
+          : `http://localhost:4000/api/learning/enhanced-chapter/${chapter.id}?userId=${user?.id}&teachingStyle=${teachingStyle}`;
+
+        const payload = useKB ? {
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          chapterContent: chapter.content,
+          teachingStyle,
+          knowledgeBaseIds: selectedKnowledgeBases
+        } : undefined;
+
+        const response = await fetch(endpoint, {
+          method: useKB ? 'POST' : 'GET',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            'Content-Type': 'application/json'
+          },
+          body: useKB ? JSON.stringify(payload) : undefined
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.enhancedLesson) {
+          const enhancedLesson = data.enhancedLesson;
+          setEnhancedLesson(enhancedLesson);
+
+          // Create embedded content
+          const embedded: EmbeddedContent[] = [];
+          const originalContent = data.originalChapter?.content || chapter.content;
+
+          // Add contextual quizzes
+          if (enhancedLesson.quickQuiz && enhancedLesson.quickQuiz.length > 0) {
+            const quizPositions = contentFormatter.generateQuizInsertionPoints(originalContent);
+            enhancedLesson.quickQuiz.forEach((quiz: any, index: number) => {
+              if (index < quizPositions.length) {
+                embedded.push({
+                  type: 'quiz',
+                  position: quizPositions[index],
+                  data: {
+                    question: quiz.question,
+                    options: quiz.options,
+                    correctAnswer: quiz.correctAnswer,
+                    explanation: quiz.explanation
+                  }
+                });
+              }
+            });
+          }
+
+          // Generate images
+          const imagePositions = contentFormatter.generateImageInsertionPoints(originalContent);
+          imagePositions.forEach((pos, index) => {
+            embedded.push({
+              type: 'image',
+              position: pos,
+              data: {
+                url: `https://via.placeholder.com/800x400/4f46e5/ffffff?text=Visual+Concept+${index + 1}`,
+                title: `Visual Concept ${index + 1}`,
+                caption: `Visual representation of key concepts`
+              }
+            });
+          });
+
+          setEmbeddedContent(embedded);
+
+          // Display enhanced content
+          let formattedContent;
+          if (enhancedLesson.enhancedSections && enhancedLesson.enhancedSections.length > 0) {
+            formattedContent = contentFormatter.formatEnhancedContent(
+              enhancedLesson.enhancedSections,
+              embedded
+            );
+          } else {
+            formattedContent = contentFormatter.formatContent(originalContent, embedded);
+          }
+
+          // Cache the lesson
+          const cachedData = {
+            enhancedLesson,
+            embedded,
+            formattedContent,
+            audioUrl: null,
+            audioDuration: 0,
+            savedLessonId: null
+          };
+          setLessonCache(prev => ({ ...prev, [cacheKey]: cachedData }));
+
+          setSelectedChapter({ ...chapter, content: formattedContent });
+          setIsLessonSaved(false);
+        } else {
+          // Fallback to original content
+          const embedded: EmbeddedContent[] = [];
+          const imagePositions = contentFormatter.generateImageInsertionPoints(chapter.content);
+          imagePositions.forEach((pos, index) => {
+            embedded.push({
+              type: 'image',
+              position: pos,
+              data: {
+                url: `https://via.placeholder.com/800x400/4f46e5/ffffff?text=Visual+Concept+${index + 1}`,
+                title: `Visual Concept ${index + 1}`,
+                caption: `Visual representation`
+              }
+            });
+          });
+          setEmbeddedContent(embedded);
+          const formattedContent = contentFormatter.formatContent(chapter.content, embedded);
+          setSelectedChapter({ ...chapter, content: formattedContent });
+        }
+      }
     } catch (error) {
       console.error('Error loading enhanced chapter:', error);
-      // Fallback to basic chapter content
       const embedded: EmbeddedContent[] = [];
       const formattedContent = contentFormatter.formatContent(chapter.content, embedded);
       setSelectedChapter({ ...chapter, content: formattedContent });
     } finally {
       setGeneratingLesson(false);
+      setIsRegenerating(false);
     }
+  };
+
+  // Helper function to load lesson data
+  const loadLessonData = async (chapter: Chapter, lessonData: any, embeddedData: any) => {
+    setEnhancedLesson(lessonData);
+    setIsLessonSaved(true);
+    setSavedLessonId(lessonData.id);
+
+    const audioUrl = lessonData.audio_url || null;
+    const audioDuration = lessonData.audio_duration || 0;
+    setAudioUrl(audioUrl);
+    setAudioDuration(audioDuration);
+
+    // Create embedded content
+    const embedded: EmbeddedContent[] = [];
+    setEmbeddedContent(embedded);
+
+    // Display saved enhanced content
+    const formattedContent = contentFormatter.formatEnhancedContent(
+      lessonData.enhanced_sections,
+      embedded
+    );
+    setSelectedChapter({ ...chapter, content: formattedContent });
+
+    // Cache the lesson from database
+    const cacheKey = `${chapter.id}-${teachingStyle}-${selectedKnowledgeBases.sort().join(',')}`;
+    const cachedData = {
+      enhancedLesson: lessonData,
+      embedded,
+      formattedContent,
+      audioUrl,
+      audioDuration,
+      savedLessonId: lessonData.id
+    };
+    setLessonCache(prev => ({ ...prev, [cacheKey]: cachedData }));
   };
 
   const handleSendMessage = async () => {
@@ -361,6 +497,198 @@ const LessonWorkspace: React.FC = () => {
     }
   };
 
+  // Save enhanced lesson
+  const saveEnhancedLesson = async () => {
+    if (!enhancedLesson || !selectedChapter || !user) return;
+
+    setSavingLesson(true);
+    try {
+      const response = await fetch('http://localhost:4000/api/learning/save-enhanced-lesson', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId: user.id,
+          chapterId: selectedChapter.id,
+          chapterTitle: selectedChapter.title,
+          teachingStyle,
+          enhancedSections: enhancedLesson.enhancedSections,
+          learningObjectives: enhancedLesson.learningObjectives,
+          keyVocabulary: enhancedLesson.keyVocabulary,
+          summary: enhancedLesson.summary,
+          quickQuiz: enhancedLesson.quickQuiz,
+          knowledgeBaseIds: selectedKnowledgeBases,
+          ttsEnabled
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setIsLessonSaved(true);
+        setSavedLessonId(data.lesson.id);
+        if (data.lesson.audio_url) {
+          setAudioUrl(data.lesson.audio_url);
+          setAudioDuration(data.lesson.audio_duration || 0);
+        }
+        console.log('✅ Enhanced lesson saved!');
+      }
+    } catch (error) {
+      console.error('Error saving lesson:', error);
+    } finally {
+      setSavingLesson(false);
+    }
+  };
+
+  // Toggle favorite
+  const toggleFavorite = async () => {
+    if (!savedLessonId || !user) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:4000/api/learning/enhanced-lesson/${savedLessonId}/toggle-favorite`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ userId: user.id })
+        }
+      );
+
+      const data = await response.json();
+      if (data.success && enhancedLesson) {
+        setEnhancedLesson({ ...enhancedLesson, is_favorite: data.lesson.is_favorite });
+      }
+    } catch (error) {
+      console.error('Error toggling favorite:', error);
+    }
+  };
+
+  // TTS Functions
+  const togglePlayPause = () => {
+    if (!audioRef.current) return;
+
+    if (isPlaying) {
+      audioRef.current.pause();
+    } else {
+      audioRef.current.play();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) {
+      setCurrentTime(audioRef.current.currentTime);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    if (audioRef.current) {
+      setAudioDuration(audioRef.current.duration);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Load knowledge bases
+  const loadKnowledgeBases = async () => {
+    if (!user) {
+      console.log('⚠️ Cannot load KBs: No user');
+      return;
+    }
+
+    setLoadingKbs(true);
+    try {
+      console.log('📚 Loading knowledge bases for user:', user.id);
+      const response = await fetch(
+        `http://localhost:4000/api/subjects?userId=${user.id}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        }
+      );
+      const data = await response.json();
+
+      console.log('📚 KB API Response:', data);
+
+      if (data.subjects && Array.isArray(data.subjects)) {
+        // Fetch document/chapter counts for each subject
+        const subjectsWithStats = await Promise.all(
+          data.subjects.map(async (subject: any) => {
+            try {
+              const statsResponse = await fetch(
+                `http://localhost:4000/api/subjects/${subject.id}/stats`,
+                {
+                  headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                  }
+                }
+              );
+              const stats = await statsResponse.json();
+              return {
+                ...subject,
+                document_count: stats.document_count || 0,
+                chapter_count: stats.chapter_count || 0
+              };
+            } catch {
+              return {
+                ...subject,
+                document_count: 0,
+                chapter_count: 0
+              };
+            }
+          })
+        );
+        console.log('✅ Loaded', subjectsWithStats.length, 'knowledge bases');
+        setAvailableKnowledgeBases(subjectsWithStats);
+      } else {
+        console.log('⚠️ No subjects in response');
+        setAvailableKnowledgeBases([]);
+      }
+    } catch (error) {
+      console.error('❌ Error loading knowledge bases:', error);
+      setAvailableKnowledgeBases([]);
+    } finally {
+      setLoadingKbs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      loadKnowledgeBases();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    // Filter knowledge bases based on search query and favorites
+    let filtered = availableKnowledgeBases;
+
+    // Filter by search query
+    if (kbSearchQuery.trim()) {
+      const query = kbSearchQuery.toLowerCase();
+      filtered = filtered.filter(
+        (kb) =>
+          kb.name.toLowerCase().includes(query) ||
+          (kb.description && kb.description.toLowerCase().includes(query))
+      );
+    }
+
+    // Filter by favorites
+    if (kbFilterFavorites) {
+      filtered = filtered.filter((kb) => kb.is_favorite);
+    }
+
+    setFilteredKnowledgeBases(filtered);
+  }, [availableKnowledgeBases, kbSearchQuery, kbFilterFavorites]);
+
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
       case 'beginner': return 'bg-green-100 text-green-800';
@@ -386,7 +714,7 @@ const LessonWorkspace: React.FC = () => {
     <div className="flex h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
       {/* Achievement Notification */}
       {showAchievement && (
-        <div className="fixed top-4 right-4 z-50 animate-slide-in">
+        <div className="fixed top-4 right-4 z-[100] animate-slide-in">
           <Card className="bg-gradient-to-r from-yellow-400 to-orange-500 text-white shadow-2xl border-0">
             <CardContent className="p-4 flex items-center gap-3">
               <div className="text-3xl">{showAchievement.icon}</div>
@@ -399,35 +727,71 @@ const LessonWorkspace: React.FC = () => {
         </div>
       )}
 
+      {/* Mobile Sidebar Overlay */}
+      {showMobileSidebar && isMobile && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40"
+          onClick={() => setShowMobileSidebar(false)}
+        />
+      )}
+
       {/* Left Sidebar - Chapter List */}
-      <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto shadow-lg">
-        <div className="p-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <BookOpen className="w-6 h-6" />
-            Course Content
-          </h2>
-          <div className="flex items-center gap-4 mt-4 text-sm">
+      {/* Desktop: Always visible | Mobile: Overlay drawer */}
+      <div
+        className={`
+          fixed md:relative z-50
+          h-full
+          bg-white border-r border-gray-200 overflow-y-auto shadow-lg
+          transition-transform duration-300 ease-in-out
+          ${isMobile ? (showMobileSidebar ? 'translate-x-0' : '-translate-x-full') : 'translate-x-0'}
+          ${!isMobile ? 'w-80' : 'w-80'}
+        `}
+      >
+        <div className="p-4 md:p-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
+          <div className="flex items-center justify-between mb-3 md:mb-4">
+            <h2 className="text-lg md:text-2xl font-bold flex items-center gap-2">
+              <BookOpen className="w-5 h-5 md:w-6 md:h-6" />
+              <span className="hidden sm:inline">Course Content</span>
+              <span className="sm:hidden">Chapters</span>
+            </h2>
+            {isMobile && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowMobileSidebar(false)}
+                className="text-white hover:bg-white/20 md:hidden"
+              >
+                <X className="w-6 h-6" />
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-3 md:gap-4 text-xs md:text-sm">
             <div className="flex items-center gap-1">
               <Flame className="w-4 h-4 text-orange-300" />
-              <span>{studyStreak.currentStreak} day streak</span>
+              <span className="hidden xs:inline">{studyStreak.currentStreak} day streak</span>
             </div>
             <div className="flex items-center gap-1">
               <Trophy className="w-4 h-4 text-yellow-300" />
-              <span>{achievements.length} badges</span>
+              <span className="hidden xs:inline">{achievements.length} badges</span>
             </div>
           </div>
         </div>
 
-        <div className="p-3">
+        <div className="p-2 md:p-3">
           {chapters.map((chapter, index) => (
             <div
               key={chapter.id}
-              className={`p-4 mb-3 rounded-xl cursor-pointer transition-all transform hover:scale-[1.02] ${
+              className={`p-3 md:p-4 mb-2 md:mb-3 rounded-xl cursor-pointer transition-all transform hover:scale-[1.02] touch-manipulation ${
                 selectedChapter?.id === chapter.id
                   ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg'
                   : 'bg-gray-50 hover:bg-gray-100 border border-gray-200'
               }`}
-              onClick={() => handleChapterSelect(chapter)}
+              onClick={() => {
+                handleChapterSelect(chapter, false);
+                if (isMobile) {
+                  setShowMobileSidebar(false);
+                }
+              }}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1">
@@ -468,87 +832,450 @@ const LessonWorkspace: React.FC = () => {
         {selectedChapter ? (
           <>
             {/* Header */}
-            <div className="bg-white border-b border-gray-200 p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-3 text-sm text-gray-600 mb-2">
-                    <span>Chapter {chapters.findIndex(c => c.id === selectedChapter.id) + 1}</span>
-                    <span>•</span>
-                    <Badge className={getDifficultyColor(selectedChapter.difficulty)}>
-                      {selectedChapter.difficulty}
-                    </Badge>
-                    {enhancedLesson && (
-                      <>
-                        <span>•</span>
-                        <Badge className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
-                          <Sparkles className="w-3 h-3 mr-1" />
-                          AI-Enhanced
-                        </Badge>
-                      </>
-                    )}
-                  </div>
-                  <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+            <div className="bg-white border-b border-gray-200 shadow-sm">
+              {/* Mobile Header Bar */}
+              {isMobile && (
+                <div className="flex items-center justify-between p-3 border-b border-gray-200">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setShowMobileSidebar(true)}
+                    className="h-10 w-10"
+                  >
+                    <Menu className="w-6 h-6" />
+                  </Button>
+                  <h1 className="text-lg font-bold text-gray-900 truncate px-2">
                     {selectedChapter.title}
                   </h1>
-                  {enhancedLesson && (
-                    <div className="mt-2 text-sm text-gray-600">
-                      <span className="font-medium">Teaching Style:</span>{' '}
-                      <span className="capitalize">{enhancedLesson.teachingApproach || teachingStyle}</span>
-                      {enhancedLesson.learningObjectives && enhancedLesson.learningObjectives.length > 0 && (
-                        <span className="ml-4">
-                          • <span className="font-medium">Objectives:</span> {enhancedLesson.learningObjectives.length} goals
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setShowChat(true)}
+                    className="h-10 w-10 relative"
+                  >
+                    <MessageCircle className="w-6 h-6" />
+                    {chatMessages.length > 0 && (
+                      <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
+                    )}
+                  </Button>
                 </div>
-                <div className="flex gap-2">
-                  {/* Teaching Style Selector */}
-                  <div className="flex gap-2 items-center">
+              )}
+
+              {/* Mobile Controls Bar */}
+              {isMobile && (
+                <div className="bg-white border-b border-gray-200 p-3 space-y-3">
+                  {/* Teaching Style */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-gray-600">Teaching Style</label>
                     <select
                       value={teachingStyle}
                       onChange={(e) => setTeachingStyle(e.target.value as any)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     >
                       <option value="direct">Direct Instruction</option>
                       <option value="socratic">Socratic Method</option>
                       <option value="constructivist">Constructivist</option>
                       <option value="encouraging">Encouraging</option>
                     </select>
+                  </div>
+
+                  {/* Knowledge Base Selector */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-gray-600">Knowledge Base</label>
                     <Button
-                      onClick={() => handleChapterSelect(selectedChapter)}
-                      disabled={generatingLesson}
-                      className="gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
+                      onClick={() => setShowKbSelector(!showKbSelector)}
+                      variant={showKbSelector ? 'default' : 'outline'}
+                      className="w-full justify-start gap-2 h-10"
                     >
-                      <Sparkles className="w-4 h-4" />
-                      {generatingLesson ? 'Enhancing...' : 'Enhance with AI'}
+                      <Brain className="w-4 h-4" />
+                      KB: {selectedKnowledgeBases.length > 0 ? selectedKnowledgeBases.length : 'None'}
                     </Button>
                   </div>
-                  <Button
-                    onClick={() => setShowChat(!showChat)}
-                    variant={showChat ? 'default' : 'outline'}
-                    className="gap-2"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                    AI Tutor
-                  </Button>
-                  <Button
-                    onClick={() => setShowQuiz(!showQuiz)}
-                    variant="outline"
-                    className="gap-2"
-                  >
-                    <Brain className="w-4 h-4" />
-                    Quiz
-                  </Button>
+
+                  {/* Action Buttons */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Save Button */}
+                    {enhancedLesson && (
+                      <Button
+                        onClick={saveEnhancedLesson}
+                        disabled={savingLesson || isLessonSaved}
+                        variant={isLessonSaved ? 'default' : 'outline'}
+                        className="w-full gap-2"
+                        size="sm"
+                      >
+                        {savingLesson ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : isLessonSaved ? (
+                          <CheckCircle2 className="w-4 h-4" />
+                        ) : (
+                          <Star className="w-4 h-4" />
+                        )}
+                        {savingLesson ? 'Saving...' : isLessonSaved ? 'Saved' : 'Save'}
+                      </Button>
+                    )}
+
+                    {/* Regenerate Button */}
+                    <Button
+                      onClick={() => {
+                        setIsRegenerating(true);
+                        handleChapterSelect(selectedChapter, true);
+                      }}
+                      disabled={generatingLesson || isRegenerating}
+                      className="w-full gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
+                      size="sm"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      {generatingLesson || isRegenerating ? 'Enhancing...' : 'Regenerate'}
+                    </Button>
+                  </div>
+
+                  {/* Knowledge Base Dropdown */}
+                  {showKbSelector && (
+                    <div className="bg-white rounded-lg shadow-xl border border-gray-200 p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-semibold text-gray-800">Select Knowledge Bases</h4>
+                        <div className="text-xs text-gray-500">
+                          {selectedKnowledgeBases.length} selected
+                        </div>
+                      </div>
+                      <div className="space-y-2 max-h-60 overflow-y-auto">
+                        {filteredKnowledgeBases.length === 0 ? (
+                          <p className="text-sm text-gray-500 py-4 text-center">
+                            No knowledge bases available
+                          </p>
+                        ) : (
+                          filteredKnowledgeBases.map((kb) => (
+                            <div
+                              key={kb.id}
+                              className="flex items-start gap-3 p-2 hover:bg-indigo-50 rounded"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedKnowledgeBases.includes(kb.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedKnowledgeBases([...selectedKnowledgeBases, kb.id]);
+                                  } else {
+                                    setSelectedKnowledgeBases(
+                                      selectedKnowledgeBases.filter(id => id !== kb.id)
+                                    );
+                                  }
+                                }}
+                                className="mt-1 text-indigo-600 focus:ring-indigo-500"
+                              />
+                              <div className="flex-1">
+                                <div className="font-medium text-sm">{kb.name}</div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Desktop Header */}
+              <div className={`${isMobile ? 'hidden' : 'block'} bg-white p-4 md:p-6 shadow-sm`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 md:gap-3 text-xs md:text-sm text-gray-600 mb-2 flex-wrap">
+                      <span>Chapter {chapters.findIndex(c => c.id === selectedChapter.id) + 1}</span>
+                      <span>•</span>
+                      <Badge className={getDifficultyColor(selectedChapter.difficulty)}>
+                        {selectedChapter.difficulty}
+                      </Badge>
+                      {enhancedLesson && (
+                        <>
+                          <span>•</span>
+                          <Badge className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
+                            <Sparkles className="w-3 h-3 mr-1" />
+                            AI-Enhanced
+                          </Badge>
+                        </>
+                      )}
+                    </div>
+                    <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                      {selectedChapter.title}
+                    </h1>
+                    {enhancedLesson && (
+                      <div className="mt-2 text-xs md:text-sm text-gray-600">
+                        <span className="font-medium">Teaching Style:</span>{' '}
+                        <span className="capitalize">{enhancedLesson.teachingApproach || teachingStyle}</span>
+                        {enhancedLesson.learningObjectives && enhancedLesson.learningObjectives.length > 0 && (
+                          <span className="ml-2 md:ml-4">
+                            • <span className="font-medium">Objectives:</span> {enhancedLesson.learningObjectives.length} goals
+                          </span>
+                        )}
+                        {lessonCache[`${selectedChapter.id}-${teachingStyle}-${selectedKnowledgeBases.sort().join(',')}`] && !isRegenerating && (
+                          <span className="ml-2 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-green-600" />
+                            <span className="text-xs text-green-700 font-medium">Cached</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="relative flex gap-2 items-center flex-wrap ml-4">
+                    {/* Teaching Style Selector */}
+                    <select
+                      value={teachingStyle}
+                      onChange={(e) => setTeachingStyle(e.target.value as any)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="px-2 md:px-3 py-1.5 md:py-2 border border-gray-300 rounded-lg text-xs md:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="direct">Direct</option>
+                      <option value="socratic">Socratic</option>
+                      <option value="constructivist">Constructivist</option>
+                      <option value="encouraging">Encouraging</option>
+                    </select>
+
+                    {/* Knowledge Base Selector */}
+                    <Button
+                      onClick={() => setShowKbSelector(!showKbSelector)}
+                      variant={showKbSelector ? 'default' : 'outline'}
+                      className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3"
+                      size="sm"
+                    >
+                      <Brain className="w-3 h-3 md:w-4 md:h-4" />
+                      <span className="hidden xs:inline">KB:</span> {selectedKnowledgeBases.length > 0 ? selectedKnowledgeBases.length : 'None'}
+                    </Button>
+
+                    {/* Knowledge Base Dropdown */}
+                    {showKbSelector && (
+                      <div className={`absolute z-10 mt-2 ${isMobile ? 'w-[calc(100vw-2rem)] max-w-sm' : 'w-96'} bg-white rounded-lg shadow-xl border border-gray-200 p-4`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="font-semibold text-gray-800">Select Knowledge Bases</h4>
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs text-gray-500">
+                            {selectedKnowledgeBases.length} selected
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              loadKnowledgeBases();
+                            }}
+                            disabled={loadingKbs}
+                            className="h-6 w-6"
+                            title="Reload Knowledge Bases"
+                          >
+                            {loadingKbs ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Search and Filters */}
+                      <div className="space-y-2 mb-3">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            value={kbSearchQuery}
+                            onChange={(e) => setKbSearchQuery(e.target.value)}
+                            placeholder="Search knowledge bases..."
+                            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant={kbFilterFavorites ? 'default' : 'outline'}
+                            onClick={() => setKbFilterFavorites(!kbFilterFavorites)}
+                            className="h-8 text-xs gap-1"
+                          >
+                            <Star className={`w-3 h-3 ${kbFilterFavorites ? 'fill-white' : ''}`} />
+                            Favorites
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 max-h-60 overflow-y-auto">
+                        {loadingKbs ? (
+                          <div className="flex items-center justify-center py-8">
+                            <div className="text-center">
+                              <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-indigo-600" />
+                              <p className="text-sm text-gray-600">Loading knowledge bases...</p>
+                            </div>
+                          </div>
+                        ) : filteredKnowledgeBases.length === 0 ? (
+                          <div className="text-center py-8">
+                            <Brain className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                            <p className="text-sm font-medium text-gray-700 mb-1">
+                              {kbSearchQuery ? 'No knowledge bases match your search' : availableKnowledgeBases.length === 0 ? 'No knowledge bases created yet' : 'No knowledge bases available'}
+                            </p>
+                            {availableKnowledgeBases.length === 0 && (
+                              <div className="mt-3">
+                                <p className="text-xs text-gray-500 mb-3">
+                                  Create a Knowledge Base to enhance your lessons with additional context
+                                </p>
+                                <Button
+                                  size="sm"
+                                  onClick={() => window.open('/knowledge', '_blank')}
+                                  className="gap-2"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  Create Knowledge Base
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          filteredKnowledgeBases.map((kb) => (
+                            <div
+                              key={kb.id}
+                              className="flex items-start gap-3 p-3 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-200"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedKnowledgeBases.includes(kb.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedKnowledgeBases([...selectedKnowledgeBases, kb.id]);
+                                  } else {
+                                    setSelectedKnowledgeBases(
+                                      selectedKnowledgeBases.filter(id => id !== kb.id)
+                                    );
+                                  }
+                                }}
+                                className="mt-1 text-indigo-600 focus:ring-indigo-500"
+                              />
+                              {/* Color Indicator */}
+                              <div
+                                className="w-2 h-12 rounded-full flex-shrink-0 mt-0.5"
+                                style={{ backgroundColor: kb.color || '#6366f1' }}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <div className="font-medium text-sm text-gray-800 truncate">{kb.name}</div>
+                                  {kb.is_favorite && (
+                                    <Star className="w-3 h-3 fill-yellow-400 text-yellow-400 flex-shrink-0" />
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1 line-clamp-2">
+                                  {kb.description || 'No description'}
+                                </div>
+                                {/* KB Stats */}
+                                <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                                  {kb.document_count !== undefined && (
+                                    <>
+                                      <span className="flex items-center gap-1">
+                                        <FileText className="w-3 h-3" />
+                                        {kb.document_count} docs
+                                      </span>
+                                      <span className="flex items-center gap-1">
+                                        <BookOpen className="w-3 h-3" />
+                                        {kb.chapter_count || 0} chapters
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                              {/* Quick View Button */}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 opacity-0 group-hover:opacity-100 hover:bg-indigo-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.open(`/knowledge/${kb.id}`, '_blank');
+                                }}
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="flex gap-2 mt-4">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setShowKbSelector(false);
+                            setKbSearchQuery('');
+                            setKbFilterFavorites(false);
+                          }}
+                          className="flex-1"
+                        >
+                          Done
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setSelectedKnowledgeBases([])}
+                          className="flex-1"
+                        >
+                          Clear All
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                    {/* Save Lesson Button */}
+                    {enhancedLesson && (
+                      <Button
+                        onClick={saveEnhancedLesson}
+                        disabled={savingLesson || isLessonSaved}
+                        variant={isLessonSaved ? 'default' : 'outline'}
+                        className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3"
+                        size="sm"
+                      >
+                        {savingLesson ? (
+                          <Loader2 className="w-3 h-3 md:w-4 md:h-4 animate-spin" />
+                        ) : isLessonSaved ? (
+                          <CheckCircle2 className="w-3 h-3 md:w-4 md:h-4" />
+                        ) : (
+                          <Star className="w-3 h-3 md:w-4 md:h-4" />
+                        )}
+                        <span className="hidden xs:inline">
+                          {savingLesson ? 'Saving...' : isLessonSaved ? 'Saved' : 'Save'}
+                        </span>
+                      </Button>
+                    )}
+
+                    {/* Favorite Button */}
+                    {isLessonSaved && enhancedLesson?.is_favorite && (
+                      <Button
+                        onClick={toggleFavorite}
+                        variant="outline"
+                        className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3 text-yellow-600"
+                        size="sm"
+                      >
+                        <Star className="w-3 h-3 md:w-4 md:h-4 fill-yellow-600" />
+                        <span className="hidden xs:inline">Favorited</span>
+                      </Button>
+                    )}
+
+                    <Button
+                      onClick={() => {
+                        setIsRegenerating(true);
+                        handleChapterSelect(selectedChapter, true); // true = force regenerate
+                      }}
+                      disabled={generatingLesson || isRegenerating}
+                      className="gap-1 md:gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-xs md:text-sm px-2 md:px-3"
+                      size="sm"
+                    >
+                      <Sparkles className="w-3 h-3 md:w-4 md:h-4" />
+                      <span className="hidden xs:inline">{generatingLesson || isRegenerating ? 'Enhancing...' : 'Regenerate'}</span>
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Content and Chat Area */}
-            <div className="flex-1 overflow-hidden">
-              <div className="h-full overflow-y-auto p-6">
-                <div className="max-w-5xl mx-auto">
+            {/* Content Area - Scrollable */}
+            <div className="flex-1 overflow-y-auto">
+              <div className={isMobile ? 'p-3' : 'p-6'}>
+                <div className={`
+                  ${isMobile ? 'w-full' : 'max-w-5xl mx-auto'}
+                `}>
                   {generatingLesson ? (
                     <div className="flex items-center justify-center py-32">
                       <div className="text-center">
@@ -572,12 +1299,19 @@ const LessonWorkspace: React.FC = () => {
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 gap-6">
+                    <div className="space-y-8">
                       {/* Chapter Content */}
                       <Card className="shadow-xl border-0 bg-white overflow-hidden">
-                        <CardContent className="p-10">
+                        <CardContent className={isMobile ? 'p-6' : 'p-10'}>
                           <div
-                            className="prose prose-lg max-w-none prose-headings:scroll-mt-24"
+                            className={`
+                              prose ${isMobile ? 'prose-base' : 'prose-lg'}
+                              max-w-none
+                              prose-headings:scroll-mt-24
+                              prose-headings:text-gray-900
+                              prose-p:text-gray-700
+                              prose-p:leading-relaxed
+                            `}
                             dangerouslySetInnerHTML={{
                               __html: selectedChapter.content
                             }}
@@ -651,6 +1385,98 @@ const LessonWorkspace: React.FC = () => {
                         </div>
                       )}
 
+                      {/* TTS Audio Player */}
+                      {(isLessonSaved || audioUrl) && (
+                        <Card className="shadow-lg border-0 bg-gradient-to-r from-indigo-50 to-purple-50">
+                          <CardHeader>
+                            <CardTitle className="flex items-center gap-2">
+                              <div className="w-10 h-10 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-full flex items-center justify-center">
+                                <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                </svg>
+                              </div>
+                              <span>Audio Lesson</span>
+                              {user?.id === 'mock-user-id' && (
+                                <Badge variant="secondary" className="ml-2 bg-yellow-100 text-yellow-800">
+                                  Demo Audio
+                                </Badge>
+                              )}
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <div className="bg-white rounded-lg p-4 border border-indigo-100">
+                              <div className="flex items-center gap-4">
+                                <Button
+                                  onClick={togglePlayPause}
+                                  className="w-12 h-12 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 flex items-center justify-center"
+                                >
+                                  {isPlaying ? (
+                                    <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 002 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                    </svg>
+                                  )}
+                                </Button>
+
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span className="text-sm font-medium text-gray-700">
+                                      {selectedChapter?.title || 'Enhanced Lesson'}
+                                    </span>
+                                    <span className="text-xs text-gray-500">
+                                      {formatTime(currentTime)} / {formatTime(audioDuration)}
+                                    </span>
+                                  </div>
+                                  <div className="relative">
+                                    <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                                      <div
+                                        className="h-full bg-gradient-to-r from-indigo-600 to-purple-600 transition-all duration-200"
+                                        style={{
+                                          width: audioDuration > 0 ? `${(currentTime / audioDuration) * 100}%` : '0%'
+                                        }}
+                                      />
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="0"
+                                      max={audioDuration || 0}
+                                      value={currentTime}
+                                      onChange={(e) => {
+                                        if (audioRef.current) {
+                                          const newTime = parseFloat(e.target.value);
+                                          audioRef.current.currentTime = newTime;
+                                          setCurrentTime(newTime);
+                                        }
+                                      }}
+                                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+
+                                <Button
+                                  onClick={() => {
+                                    if (audioRef.current) {
+                                      audioRef.current.playbackRate = audioRef.current.playbackRate === 1 ? 1.5 : 1;
+                                    }
+                                  }}
+                                  variant="outline"
+                                  size="sm"
+                                  className="gap-1"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                  </svg>
+                                  <span className="text-xs">Speed</span>
+                                </Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )}
+
                       {/* Analytics Dashboard */}
                       {recommendations.length > 0 && (
                         <Card className="shadow-lg border-0 bg-gradient-to-br from-blue-50 to-indigo-50">
@@ -692,67 +1518,96 @@ const LessonWorkspace: React.FC = () => {
 
                       {/* Comprehensive Quiz Section */}
                       <Card className="shadow-xl border-0 bg-white">
-                        <CardHeader className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
-                          <CardTitle className="flex items-center gap-2">
-                            <Brain className="w-6 h-6" />
-                            Test Your Knowledge
-                          </CardTitle>
-                          <p className="text-purple-100 mt-2">
-                            Comprehensive quiz to validate your understanding
-                          </p>
-                        </CardHeader>
-                        <CardContent className="p-6">
-                          {!showQuiz ? (
-                            <div className="text-center py-8">
-                              <div className="w-20 h-20 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <CheckCircle2 className="w-10 h-10 text-purple-600" />
+                        {!showQuiz ? (
+                          <CardContent className="p-8 text-center">
+                            <div className="max-w-2xl mx-auto">
+                              <div className="w-20 h-20 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <Brain className="w-10 h-10 text-purple-600" />
                               </div>
-                              <h3 className="text-xl font-semibold text-gray-800 mb-2">
-                                Ready to test your knowledge?
+                              <h3 className="text-2xl font-bold text-gray-800 mb-4">
+                                Test Your Knowledge
                               </h3>
-                              <p className="text-gray-600 mb-6">
-                                Take a comprehensive quiz to see how well you've mastered this chapter
+                              <p className="text-gray-600 mb-8">
+                                Take a comprehensive quiz to validate your understanding of this chapter
                               </p>
                               <Button
                                 onClick={() => setShowQuiz(true)}
-                                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-8 py-3 text-lg gap-2"
+                                className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-12 py-4 text-lg gap-3"
+                                size="lg"
                               >
-                                <Zap className="w-5 h-5" />
-                                Start Quiz
+                                <Zap className="w-6 h-6" />
+                                Start Comprehensive Quiz
                               </Button>
                             </div>
-                          ) : (
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-8 text-center">
-                              <HelpCircle className="w-12 h-12 text-blue-600 mx-auto mb-4" />
-                              <p className="text-blue-800 font-medium">
-                                Quiz component will be integrated here
-                              </p>
-                              <p className="text-blue-600 text-sm mt-2">
-                                Interactive quiz with real-time feedback
-                              </p>
-                            </div>
-                          )}
-                        </CardContent>
+                          </CardContent>
+                        ) : (
+                          <>
+                            <CardHeader className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
+                              <CardTitle className="flex items-center gap-2">
+                                <Brain className="w-6 h-6" />
+                                Chapter Quiz
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent className="p-6">
+                              <QuizComponent
+                                chapterId={selectedChapter.id}
+                                onComplete={(result) => {
+                                  console.log('Quiz completed:', result);
+                                  setShowQuiz(false);
+                                }}
+                              />
+                            </CardContent>
+                          </>
+                        )}
                       </Card>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* AI Tutor Chat Panel */}
+              {/* AI Tutor Chat Panel - Desktop Sidebar | Mobile Modal */}
               {showChat && (
-                <div className="w-96 border-l border-gray-200 bg-white flex flex-col">
-                  <div className="p-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Brain className="w-5 h-5" />
-                      <h3 className="font-bold">AI Teaching Assistant</h3>
-                    </div>
-                    <p className="text-xs text-indigo-100">
-                      Ask questions, get explanations, or request practice problems
-                    </p>
-                  </div>
+                <>
+                  {/* Mobile Chat Overlay */}
+                  {isMobile && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 z-40" onClick={() => setShowChat(false)} />
+                  )}
 
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {/* Chat Panel */}
+                  <div
+                    className={`
+                      ${isMobile
+                        ? 'fixed inset-0 z-50'
+                        : 'w-96 border-l border-gray-200'
+                      }
+                      bg-white flex flex-col
+                      ${isMobile ? 'rounded-t-2xl' : ''}
+                    `}
+                  >
+                    {/* Chat Header */}
+                    <div className="p-3 md:p-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Brain className="w-5 h-5" />
+                          <h3 className="font-bold text-sm md:text-base">AI Teaching Assistant</h3>
+                        </div>
+                        {isMobile && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setShowChat(false)}
+                            className="text-white hover:bg-white/20 h-8 w-8"
+                          >
+                            <X className="w-5 h-5" />
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-xs text-indigo-100">
+                        Ask questions, get explanations, or request practice problems
+                      </p>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-3 md:space-y-4">
                     {chatMessages.length === 0 && (
                       <div className="text-center py-8 text-gray-500">
                         <MessageCircle className="w-12 h-12 mx-auto mb-3 text-gray-300" />
@@ -794,69 +1649,123 @@ const LessonWorkspace: React.FC = () => {
                         </div>
                       </div>
                     )}
-                  </div>
+                    </div>
 
-                  <div className="p-4 border-t border-gray-200">
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                        placeholder="Ask your AI tutor anything..."
-                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                      <Button
-                        onClick={handleSendMessage}
-                        disabled={!chatInput.trim() || chatLoading}
-                        className="bg-indigo-600 hover:bg-indigo-700"
-                      >
-                        Send
-                      </Button>
+                    <div className="p-3 md:p-4 border-t border-gray-200">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                          placeholder="Ask your AI tutor anything..."
+                          className="flex-1 px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                        />
+                        <Button
+                          onClick={handleSendMessage}
+                          disabled={!chatInput.trim() || chatLoading}
+                          className="bg-indigo-600 hover:bg-indigo-700 px-4 md:px-6"
+                          size="sm"
+                        >
+                          <span className="hidden xs:inline">Send</span>
+                          <span className="xs:hidden">➤</span>
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                </>
               )}
             </div>
 
-            {/* Navigation */}
-            <div className="bg-white border-t border-gray-200 p-4 shadow-lg">
-              <div className="flex justify-between items-center max-w-5xl mx-auto">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
-                    if (currentIndex > 0) {
-                      handleChapterSelect(chapters[currentIndex - 1]);
-                    }
-                  }}
-                  disabled={chapters.findIndex(c => c.id === selectedChapter.id) === 0}
-                  className="gap-2"
-                >
-                  ← Previous Chapter
-                </Button>
+            {/* Navigation - Desktop | Mobile Bottom Bar */}
+            <div className={`bg-white border-t border-gray-200 shadow-lg ${isMobile ? 'p-2' : 'p-4'}`}>
+              <div className={`flex items-center gap-2 ${isMobile ? 'justify-center' : 'justify-between'} max-w-5xl mx-auto`}>
+                {isMobile ? (
+                  // Mobile: Fixed bottom navigation
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
+                        if (currentIndex > 0) {
+                          handleChapterSelect(chapters[currentIndex - 1], false);
+                        }
+                      }}
+                      disabled={chapters.findIndex(c => c.id === selectedChapter.id) === 0}
+                      className="flex-1 gap-1 h-12 text-xs"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      Prev
+                    </Button>
 
-                <Button
-                  variant="outline"
-                  onClick={() => navigate('/books')}
-                  className="gap-2"
-                >
-                  <ArrowRight className="w-4 h-4 rotate-180" />
-                  Back to Documents
-                </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate('/books')}
+                      className="flex-1 gap-1 h-12 text-xs"
+                    >
+                      <ArrowRight className="w-4 h-4 rotate-180" />
+                      <span className="hidden xs:inline">Back</span>
+                    </Button>
 
-                <Button
-                  onClick={() => {
-                    const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
-                    if (currentIndex < chapters.length - 1) {
-                      handleChapterSelect(chapters[currentIndex + 1]);
-                    }
-                  }}
-                  disabled={chapters.findIndex(c => c.id === selectedChapter.id) === chapters.length - 1}
-                  className="gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
-                >
-                  Next Chapter →
-                </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
+                        if (currentIndex < chapters.length - 1) {
+                          handleChapterSelect(chapters[currentIndex + 1], false);
+                        }
+                      }}
+                      disabled={chapters.findIndex(c => c.id === selectedChapter.id) === chapters.length - 1}
+                      className="flex-1 gap-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 h-12 text-xs"
+                    >
+                      Next
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+                  </>
+                ) : (
+                  // Desktop: Full button labels
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
+                        if (currentIndex > 0) {
+                          handleChapterSelect(chapters[currentIndex - 1], false);
+                        }
+                      }}
+                      disabled={chapters.findIndex(c => c.id === selectedChapter.id) === 0}
+                      className="gap-2"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      Previous Chapter
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      onClick={() => navigate('/books')}
+                      className="gap-2"
+                    >
+                      <ArrowRight className="w-4 h-4 rotate-180" />
+                      Back to Documents
+                    </Button>
+
+                    <Button
+                      onClick={() => {
+                        const currentIndex = chapters.findIndex(c => c.id === selectedChapter.id);
+                        if (currentIndex < chapters.length - 1) {
+                          handleChapterSelect(chapters[currentIndex + 1], false);
+                        }
+                      }}
+                      disabled={chapters.findIndex(c => c.id === selectedChapter.id) === chapters.length - 1}
+                      className="gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
+                    >
+                      Next Chapter
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -874,6 +1783,20 @@ const LessonWorkspace: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Hidden Audio Element for TTS */}
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onEnded={() => setIsPlaying(false)}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          preload="metadata"
+        />
+      )}
     </div>
   );
 };

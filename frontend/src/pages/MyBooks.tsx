@@ -14,6 +14,7 @@ import {
 import UploadBook from '@/components/UploadBook';
 import { documentsAPI } from '@/services/api';
 import { Document } from '@/types/api';
+import { DocumentListSkeleton } from '@/components/SkeletonLoader';
 
 export default function MyBooks() {
   const navigate = useNavigate();
@@ -29,9 +30,10 @@ export default function MyBooks() {
   }, []);
 
   const loadDocuments = async () => {
+    setLoading(true);
     try {
       const data = await documentsAPI.getAll();
-      setDocuments(data.documents || []);
+      setDocuments(data.data || []);
     } catch (error) {
       console.error('Failed to load documents:', error);
     } finally {
@@ -88,11 +90,19 @@ export default function MyBooks() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-3 md:p-6">
+        <DocumentListSkeleton />
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-7xl mx-auto p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold">My Books</h1>
-        <Button onClick={() => setShowUpload(!showUpload)} className="flex items-center gap-2">
+    <div className="max-w-7xl mx-auto p-3 md:p-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 md:mb-6">
+        <h1 className="text-2xl md:text-3xl font-bold">My Books</h1>
+        <Button onClick={() => setShowUpload(!showUpload)} className="flex items-center gap-2 w-full md:w-auto">
           <Plus className="w-4 h-4" />
           Upload Book
         </Button>
@@ -118,12 +128,12 @@ export default function MyBooks() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {documents.map((doc) => (
-            <Card key={doc.id} className="p-4 hover:shadow-lg transition-shadow">
+            <Card key={doc.id} className="p-4 hover:shadow-lg transition-shadow touch-manipulation">
               <div className="flex items-start justify-between mb-3">
-                <BookOpen className="w-8 h-8 text-blue-600" />
-                <div className="flex items-center gap-2">
+                <BookOpen className="w-6 h-6 md:w-8 md:h-8 text-blue-600" />
+                <div className="flex items-center gap-1 md:gap-2">
                   {getStatusIcon(doc.upload_status)}
-                  <span className="text-sm">{getStatusText(doc.upload_status)}</span>
+                  <span className="text-xs md:text-sm">{getStatusText(doc.upload_status)}</span>
                   <Button
                     variant="ghost"
                     size="sm"

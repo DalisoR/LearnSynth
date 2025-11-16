@@ -18,15 +18,23 @@ First, copy the example environment file:
 cp .env.example .env
 ```
 
-Edit the `.env` file and add your OpenAI API key:
+Edit the `.env` file with your credentials:
 ```bash
-# OpenAI API Key (required for AI features)
-OPENAI_API_KEY=your_openai_api_key_here
+# Supabase Configuration (Required)
+# Get these from https://app.supabase.io/project/[your-project]/settings/api
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key_here
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
 
-# You can keep other defaults or modify as needed
-POSTGRES_PASSWORD=postgres
-JWT_SECRET=your-super-secret-jwt-key-change-in-production
+# OpenAI API Key (Required for AI features)
+OPENAI_API_KEY=your_openai_api_key_here
 ```
+
+**Where to find Supabase credentials:**
+1. Go to [app.supabase.io](https://app.supabase.io)
+2. Select your LearnSynth project
+3. Click **Settings** → **API**
+4. Copy the **URL** and both **anon** and **service_role** keys
 
 ### 2. Start All Services
 
@@ -36,16 +44,16 @@ docker-compose up
 ```
 
 This will start:
-- **PostgreSQL Database** (port 5432)
-- **Redis Cache** (port 6379)
-- **Backend API** (port 4000)
+- **Backend API** (port 4000) - connects to your Supabase cloud database
 - **Frontend React App** (port 5173)
+
+**Note**: No local database needed! Your data is stored in Supabase's cloud PostgreSQL database.
 
 ### 3. Access the Application
 
 - **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:4000
-- **Database**: localhost:5432 (username: postgres, password: postgres)
+- **Supabase Dashboard**: https://app.supabase.io (manage your database here)
 
 ## 🔧 Docker Commands
 
@@ -67,7 +75,6 @@ docker-compose logs
 # Specific service
 docker-compose logs backend
 docker-compose logs frontend
-docker-compose logs postgres
 
 # Follow logs in real-time
 docker-compose logs -f
@@ -78,10 +85,9 @@ docker-compose logs -f
 docker-compose up --build
 ```
 
-### Remove All Containers and Volumes
-⚠️ **Warning**: This will delete all data!
+### Remove All Containers
 ```bash
-docker-compose down -v
+docker-compose down
 ```
 
 ### Clean Up Docker System
@@ -91,9 +97,6 @@ docker container prune
 
 # Remove unused images
 docker image prune
-
-# Remove unused volumes
-docker volume prune
 ```
 
 ## 📁 Directory Structure
@@ -104,30 +107,43 @@ When running with Docker, the following directories are mounted as volumes:
 learnsynth/
 ├── backend/
 │   └── uploads/          # Uploaded documents (persistent)
-├── database/             # Database initialization files
-└── data/                 # PostgreSQL and Redis data (Docker volumes)
+└── frontend/             # Frontend source code
 ```
 
-## 🗄️ Database Management
+**Note**: This project uses **Supabase** (managed PostgreSQL in the cloud) for the database, so there's no local database to manage. Your data is stored securely in Supabase's cloud infrastructure.
 
-### Access PostgreSQL Shell
-```bash
-docker-compose exec postgres psql -U postgres -d learnsynth
-```
+## 🗄️ Database Management (Supabase)
+
+Since you're using Supabase, you manage your database through the Supabase dashboard:
+
+### Access Supabase Dashboard
+- Go to [app.supabase.io](https://app.supabase.io)
+- Select your project
+- Use the SQL Editor for queries
+- Check the Table Editor for data management
 
 ### Backup Database
-```bash
-docker-compose exec postgres pg_dump -U postgres learnsynth > backup.sql
-```
+- Supabase automatically backs up your data
+- You can also export data from the dashboard
+- For automated backups, use Supabase's built-in backup features
 
 ### Restore Database
-```bash
-cat backup.sql | docker-compose exec -T postgres psql -U postgres learnsynth
-```
+- Import SQL files through the Supabase dashboard
+- Use the SQL Editor to run restoration scripts
 
-### View Database Logs
+### Supabase CLI (Optional)
 ```bash
-docker-compose logs postgres
+# Install Supabase CLI
+npm install -g supabase
+
+# Link to your project
+supabase link --project-ref your-project-ref
+
+# Pull database schema
+supabase db pull
+
+# Push schema changes
+supabase db push
 ```
 
 ## 🔍 Troubleshooting
@@ -229,19 +245,34 @@ docker stats
 
 Complete list of environment variables you can configure in `.env`:
 
+### Required Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| SUPABASE_URL | Your Supabase project URL | https://xyz123.supabase.co |
+| SUPABASE_ANON_KEY | Supabase anonymous key | eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... |
+| SUPABASE_SERVICE_ROLE_KEY | Supabase service role key | eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... |
+| OPENAI_API_KEY | OpenAI API key for AI features | sk-... |
+
+### Optional Variables
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| POSTGRES_USER | Database username | postgres |
-| POSTGRES_PASSWORD | Database password | postgres |
-| POSTGRES_DB | Database name | learnsynth |
 | NODE_ENV | Environment mode | development |
 | PORT | Backend port | 4000 |
-| DATABASE_URL | Full database connection string | auto-generated |
-| REDIS_URL | Redis connection string | auto-generated |
-| JWT_SECRET | JWT signing secret | (required) |
-| OPENAI_API_KEY | OpenAI API key for AI features | (required) |
+| FRONTEND_URL | Frontend URL for CORS | http://localhost:5173 |
+| REDIS_URL | Redis connection string | redis://redis:6379 |
+| LLM_PROVIDER | AI provider | openai |
+| TTS_PROVIDER | Text-to-speech provider | stub |
+| EMBEDDING_PROVIDER | Embeddings provider | stub |
 | VITE_API_URL | Frontend API URL | http://localhost:4000 |
 | VITE_WS_URL | Frontend WebSocket URL | http://localhost:4000 |
+
+**Where to get Supabase credentials:**
+1. Go to [app.supabase.io](https://app.supabase.io)
+2. Select your project
+3. Go to Settings → API
+4. Copy the URL and keys from there
 
 ## 🚦 Production Deployment
 

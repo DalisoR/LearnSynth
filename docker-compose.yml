@@ -1,37 +1,21 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
-    container_name: learnsynth-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: learnsynth
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database_schema.sql:/docker-entrypoint-initdb.d/1-schema.sql
-    networks:
-      - learnsynth-network
+  # Redis Cache (optional - only needed if you want local Redis)
+  # You can use Supabase's built-in features instead
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: learnsynth-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   networks:
+  #     - learnsynth-network
+  #   command: redis-server --appendonly yes
 
-  # Redis Cache
-  redis:
-    image: redis:7-alpine
-    container_name: learnsynth-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - learnsynth-network
-    command: redis-server --appendonly yes
-
-  # Backend API
+  # Backend API (connects to Supabase cloud database)
   backend:
     build:
       context: ./backend
@@ -41,19 +25,27 @@ services:
     environment:
       NODE_ENV: development
       PORT: 4000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/learnsynth
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      # Supabase Configuration (required)
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      # Redis Configuration (optional - for caching)
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # AI Configuration (required)
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Other settings
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      TTS_PROVIDER: ${TTS_PROVIDER:-stub}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-stub}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
     ports:
       - "4000:4000"
     volumes:
       - ./backend:/app
       - /app/node_modules
       - ./uploads:/app/uploads
-    depends_on:
-      - postgres
-      - redis
+    # depends_on:
+    #   - redis  # Only if using local Redis
     networks:
       - learnsynth-network
 
@@ -65,8 +57,8 @@ services:
     container_name: learnsynth-frontend
     restart: unless-stopped
     environment:
-      VITE_API_URL: http://localhost:4000
-      VITE_WS_URL: http://localhost:4000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+      VITE_WS_URL: ${VITE_WS_URL:-http://localhost:4000}
     ports:
       - "5173:5173"
     volumes:
@@ -77,9 +69,8 @@ services:
     networks:
       - learnsynth-network
 
-volumes:
-  postgres_data:
-  redis_data:
+# volumes:
+#   redis_data:
 
 networks:
   learnsynth-network:

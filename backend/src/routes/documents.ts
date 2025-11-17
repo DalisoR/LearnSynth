@@ -4,25 +4,59 @@ import { supabase } from '../services/supabase';
 import { createFileProcessor } from '../services/fileProcessor/factory';
 import { InMemoryJobQueue } from '../services/jobQueue/inMemoryQueue';
 import logger from '../utils/logger';
+import {
+  parsePaginationParams,
+  getPaginationMeta,
+  createPaginationQuery,
+} from '../utils/pagination';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Get all documents for user
+// Get all documents for user with pagination
 router.get('/', async (req, res) => {
   try {
     // Ensure test user exists
     const userId = await ensureTestUser();
 
+    // Parse pagination parameters
+    const paginationOptions = parsePaginationParams(req.query);
+
+    // Get total count
+    const { count, error: countError } = await supabase
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    if (countError) throw countError;
+
+    const total = count || 0;
+
+    // Calculate pagination
+    const offset = (paginationOptions.page! - 1) * paginationOptions.limit!;
+    const from = offset;
+    const to = offset + paginationOptions.limit! - 1;
+
+    // Fetch documents with pagination
     const { data, error } = await supabase
       .from('documents')
       .select('*')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order(paginationOptions.sortBy!, { ascending: paginationOptions.sortOrder === 'asc' })
+      .range(from, to);
 
     if (error) throw error;
 
-    res.json({ documents: data });
+    const meta = getPaginationMeta(
+      paginationOptions.page!,
+      paginationOptions.limit!,
+      total
+    );
+
+    res.json({
+      data,
+      meta,
+    });
   } catch (error) {
     logger.error('Error fetching documents:', error);
     res.status(500).json({ error: 'Failed to fetch documents' });

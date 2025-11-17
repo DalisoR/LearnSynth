@@ -73,7 +73,7 @@ export class ChapterManager {
         difficulty: (chapter.difficulty as any) || 'intermediate',
         prerequisites: this.parseJsonSafely(chapter.prerequisites, []),
         summary: chapter.summary || '',
-        isUnlocked: progressRecord?.is_unlocked || chapter.chapter_number === 1,
+        isUnlocked: progressRecord?.is_unlocked || chapter.chapter_number === 1 || true, // TEMPORARY: Unlock all chapters for demo
         isCompleted: progressRecord?.is_completed || false,
         userProgress: progressRecord?.progress || 0
       };
@@ -106,11 +106,7 @@ export class ChapterManager {
       .single();
 
     // Check if chapter is unlocked
-    const isUnlocked = progress?.is_unlocked || chapter.chapter_number === 1;
-
-    if (!isUnlocked) {
-      throw new Error('Chapter is locked. Complete previous chapters to unlock.');
-    }
+    const isUnlocked = progress?.is_unlocked || chapter.chapter_number === 1 || true; // TEMPORARY: Unlock all chapters for demo
 
     return {
       id: chapter.id,

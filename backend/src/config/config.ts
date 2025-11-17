@@ -16,9 +16,9 @@ export const config = {
 
   // LLM Provider
   llm: {
-    provider: process.env.LLM_PROVIDER || 'stub',
+    provider: process.env.LLM_PROVIDER || 'openai',
     apiKey: process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY || '',
-    model: process.env.LLM_MODEL || 'gpt-3.5-turbo',
+    model: process.env.LLM_MODEL || 'gpt-4o',
   },
 
   // TTS Provider
@@ -42,9 +42,16 @@ export const config = {
     chromaPort: parseInt(process.env.CHROMA_PORT || '8000', 10),
   },
 
-  // Redis (for job queue)
+  // Redis (for caching, sessions, job queue)
   redis: {
     url: process.env.REDIS_URL || 'redis://localhost:6379',
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB || '0', 10),
+    enableCaching: process.env.REDIS_ENABLE_CACHING !== 'false',
+    defaultTTL: parseInt(process.env.REDIS_DEFAULT_TTL || '3600', 10), // 1 hour
+    maxConnections: parseInt(process.env.REDIS_MAX_CONNECTIONS || '100', 10),
   },
 
   // Rate Limiting

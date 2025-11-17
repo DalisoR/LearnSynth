@@ -263,6 +263,7 @@ const QuizComponent: React.FC<QuizComponentProps> = ({ chapterId, onComplete }) 
             </div>
           </div>
 
+          {/* Multiple Choice Questions */}
           {question.type === 'multiple-choice' && question.options && (
             <RadioGroup
               value={answers[question.id]?.toString() || ''}
@@ -277,6 +278,92 @@ const QuizComponent: React.FC<QuizComponentProps> = ({ chapterId, onComplete }) 
                 </div>
               ))}
             </RadioGroup>
+          )}
+
+          {/* True/False Questions */}
+          {question.type === 'true-false' && (
+            <RadioGroup
+              value={answers[question.id]?.toString() || ''}
+              onValueChange={(value) => handleAnswerChange(question.id, value)}
+            >
+              <div className="flex items-center space-x-2 p-3 border rounded-lg hover:bg-gray-50">
+                <RadioGroupItem value="true" id="true-option" />
+                <Label htmlFor="true-option" className="flex-1 cursor-pointer font-medium text-green-700">
+                  True
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2 p-3 border rounded-lg hover:bg-gray-50">
+                <RadioGroupItem value="false" id="false-option" />
+                <Label htmlFor="false-option" className="flex-1 cursor-pointer font-medium text-red-700">
+                  False
+                </Label>
+              </div>
+            </RadioGroup>
+          )}
+
+          {/* Short Answer / Fill-in-Blank / Definition / One-Word Questions */}
+          {(question.type === 'short-answer' ||
+            question.type === 'scenario' ||
+            question.type === 'matching' ||
+            question.type === 'fill-blank' ||
+            question.type === 'fill-in-blank' ||
+            question.type === 'definition' ||
+            question.type === 'one-word' ||
+            question.type === 'numerical' ||
+            question.type === 'keyword') && (
+            <div>
+              <textarea
+                className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                rows={question.type === 'numerical' || question.type === 'one-word' || question.type === 'keyword' ? 1 : 4}
+                placeholder={
+                  question.type === 'numerical' ? 'Enter a number (e.g., 42, 3.14, 1000)' :
+                  question.type === 'one-word' || question.type === 'keyword' ? 'Enter one word or a short phrase' :
+                  'Type your answer here...'
+                }
+                value={answers[question.id]?.toString() || ''}
+                onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                {question.type === 'numerical' ? '🔢 Enter a numerical value' :
+                 question.type === 'one-word' ? '📝 Single word answer' :
+                 question.type === 'keyword' ? '🔑 Key term or phrase' :
+                 '💡 Tip: Your answer will be checked for understanding, not just exact wording!'}
+              </p>
+            </div>
+          )}
+
+          {/* Fallback for any unhandled question types */}
+          {!['multiple-choice', 'true-false', 'short-answer', 'scenario', 'matching', 'fill-blank', 'fill-in-blank', 'definition', 'one-word', 'numerical', 'keyword'].includes(question.type) && (
+            <div>
+              {question.options && question.options.length > 0 ? (
+                <RadioGroup
+                  value={answers[question.id]?.toString() || ''}
+                  onValueChange={(value) => handleAnswerChange(question.id, parseInt(value))}
+                >
+                  {question.options.map((option, index) => (
+                    <div key={index} className="flex items-center space-x-2 p-3 border rounded-lg hover:bg-gray-50">
+                      <RadioGroupItem value={index.toString()} id={`option-${index}`} />
+                      <Label htmlFor={`option-${index}`} className="flex-1 cursor-pointer">
+                        {option}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              ) : (
+                <div>
+                  <textarea
+                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    rows={3}
+                    placeholder="Type your answer here..."
+                    value={answers[question.id]?.toString() || ''}
+                    onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+                  />
+                  <p className="text-xs text-gray-500 mt-2">
+                    💡 This question type requires a text answer
+                  </p>
+                </div>
+              )}
+            </div>
           )}
         </div>
 

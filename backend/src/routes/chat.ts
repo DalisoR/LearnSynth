@@ -9,14 +9,14 @@ const router = Router();
 // Start a new chat session
 router.post('/start', async (req, res) => {
   try {
-    const { sessionName, subjectId } = req.body;
+    const { sessionName, subjectId, subjectIds } = req.body;
     const userId = '00000000-0000-0000-0000-000000000000';
 
     const { data: session, error } = await supabase
       .from('chat_sessions')
       .insert({
         user_id: userId,
-        subject_id: subjectId,
+        subject_id: subjectId, // Keep for backward compatibility
         session_name: sessionName,
       })
       .select()
@@ -35,8 +35,15 @@ router.post('/start', async (req, res) => {
 router.post('/:sessionId/message', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { message, includeKB = true } = req.body;
+    const {
+      message,
+      includeKB = true,
+      subjectIds = [], // Support multiple KBs
+      includeWebSearch = true // Complement with web search
+    } = req.body;
     const userId = '00000000-0000-0000-0000-000000000000';
+
+    logger.info(`Processing chat message. KBs: ${subjectIds.length}, Web: ${includeWebSearch}`);
 
     // Save user message
     const { error: userMsgError } = await supabase
@@ -49,27 +56,43 @@ router.post('/:sessionId/message', async (req, res) => {
 
     if (userMsgError) throw userMsgError;
 
-    // Get session details
-    const { data: session } = await supabase
-      .from('chat_sessions')
-      .select('*')
-      .eq('id', sessionId)
-      .single();
-
     let kbContext = '';
+    let referencedSnippets: any[] = [];
 
-    // Retrieve context from KB if requested
-    if (includeKB && session?.subject_id) {
+    // Retrieve context from KBs if requested and KBs are provided
+    if (includeKB && subjectIds.length > 0) {
       const embeddingsService = createEmbeddingsService();
-      const searchResults = await embeddingsService.search({
-        query: message,
-        subjectId: session.subject_id,
-        limit: 3,
-      });
 
-      kbContext = searchResults
-        .map(r => `Source: ${r.metadata.source}\nContent: ${r.content}`)
-        .join('\n\n');
+      // Search across all selected KBs
+      for (const subjectId of subjectIds) {
+        try {
+          const searchResults = await embeddingsService.search({
+            query: message,
+            subjectId: subjectId,
+            limit: 3, // Top 3 results per KB
+          });
+
+          const kbSnippets = searchResults.map(r => ({
+            content: r.content,
+            score: r.relevanceScore,
+            source: subjectId,
+            metadata: r.metadata
+          }));
+
+          referencedSnippets.push(...kbSnippets);
+
+          const kbText = searchResults
+            .map(r => `Source: ${r.metadata?.chapter_title || 'Document'}\nContent: ${r.content}`)
+            .join('\n\n');
+
+          if (kbText) {
+            kbContext += (kbContext ? '\n\n' : '') + kbText;
+          }
+        } catch (kbError) {
+          logger.error(`Error searching KB ${subjectId}:`, kbError);
+          // Continue with other KBs
+        }
+      }
     }
 
     // Get recent chat history for context
@@ -84,12 +107,33 @@ router.post('/:sessionId/message', async (req, res) => {
       ?.map(m => `${m.role}: ${m.content}`)
       .join('\n') || '';
 
+    // Build system prompt
+    let systemPrompt = 'You are an expert AI tutor and learning assistant. ';
+
+    if (includeKB && kbContext) {
+      systemPrompt += 'Use the provided knowledge base context to answer questions accurately. When you use information from the knowledge base, cite it by mentioning the source. ';
+    } else {
+      systemPrompt += 'You are a helpful AI assistant similar to ChatGPT. Provide comprehensive and accurate information. ';
+    }
+
+    if (includeWebSearch) {
+      systemPrompt += 'You may also incorporate general knowledge and internet resources to provide complete answers. ';
+    }
+
+    systemPrompt += 'Keep responses conversational, clear, and educational. Break down complex concepts into easy-to-understand explanations.';
+
+    // Build context for LLM
+    let fullContext = chatHistory;
+    if (kbContext) {
+      fullContext = `Knowledge Base Context:\n${kbContext}\n\nChat History:\n${chatHistory}`;
+    }
+
     // Generate response using LLM
     const llmService = createLLMService();
     const response = await llmService.generate({
       prompt: message,
-      context: kbContext ? `Knowledge Base Context:\n${kbContext}\n\nChat History:\n${chatHistory}` : chatHistory,
-      systemPrompt: 'You are an AI tutor helping students learn. Use the provided knowledge base context when relevant. Cite sources when using information from the knowledge base.',
+      context: fullContext,
+      systemPrompt,
     });
 
     // Save assistant message
@@ -99,15 +143,7 @@ router.post('/:sessionId/message', async (req, res) => {
         session_id: sessionId,
         role: 'assistant',
         content: response.content,
-        referenced_snippets: includeKB && session?.subject_id
-          ? [
-              {
-                content: 'Relevant information from knowledge base',
-                score: 0.9,
-                source: session.subject_id,
-              },
-            ]
-          : [],
+        referenced_snippets: referencedSnippets,
       })
       .select()
       .single();
@@ -117,10 +153,15 @@ router.post('/:sessionId/message', async (req, res) => {
     res.json({
       message: assistantMsg,
       tokensUsed: response.tokensUsed,
+      kbResults: referencedSnippets.length,
+      kbUsed: includeKB && referencedSnippets.length > 0,
     });
   } catch (error) {
     logger.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    res.status(500).json({
+      error: 'Failed to send message',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 

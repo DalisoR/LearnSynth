@@ -57,5 +57,84 @@ export const learningApi = {
     }
 
     return response.json();
+  },
+
+  // Parse free-form course outline into structured format
+  parseCourseOutline: async (outlineText: string) => {
+    const response = await fetch(`http://localhost:4000/api/learning/parse-course-outline`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({ outlineText })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to parse course outline');
+    }
+
+    return response.json();
+  },
+
+  // Generate comprehensive lesson from course outline
+  generateComprehensiveLesson: async (
+    courseOutline: any,
+    subjectIds: string[],
+    teachingStyle: 'socratic' | 'direct' | 'constructivist' | 'encouraging' = 'direct'
+  ) => {
+    const response = await fetch(`http://localhost:4000/api/learning/generate-enhanced-lesson-with-kb`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({
+        mode: 'comprehensive',
+        courseOutline,
+        subjectIds,
+        teachingStyle
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to generate comprehensive lesson');
+    }
+
+    return response.json();
+  },
+
+  // Generate enhanced lesson with KB support (standard mode)
+  generateLessonWithKB: async (
+    chapterId: string,
+    chapterTitle: string,
+    chapterContent: string,
+    teachingStyle: 'socratic' | 'direct' | 'constructivist' | 'encouraging',
+    knowledgeBaseIds: string[] = []
+  ) => {
+    const response = await fetch(`http://localhost:4000/api/learning/generate-enhanced-lesson-with-kb`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`
+      },
+      body: JSON.stringify({
+        mode: 'standard',
+        chapterId,
+        chapterTitle,
+        chapterContent,
+        teachingStyle,
+        knowledgeBaseIds
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to generate lesson with KB');
+    }
+
+    return response.json();
   }
 };

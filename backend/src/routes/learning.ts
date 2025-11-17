@@ -10,6 +10,7 @@ import { aiQuizEngine } from '../services/learning/aiQuizEngine';
 import { userProgressService } from '../services/learning/userProgress';
 import { enhancedLessonGenerator } from '../services/learning/enhancedLessonGenerator';
 import { supabase } from '../services/supabase';
+import { llmService } from '../services/llm/factory';
 
 const router = Router();
 
@@ -568,6 +569,319 @@ router.get('/enhanced-chapter/:chapterId', async (req, res) => {
 
   } catch (error: any) {
     console.error('Error fetching enhanced chapter:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Generate enhanced lesson with Knowledge Base support
+// Supports two modes:
+// 1. Standard KB enhancement (existing) - enhance single chapter with specific KBs
+// 2. Comprehensive mode (new) - create lesson from course outline using ALL subjects
+router.post('/generate-enhanced-lesson-with-kb', async (req, res) => {
+  try {
+    const {
+      chapterId,
+      chapterTitle,
+      chapterContent,
+      teachingStyle,
+      knowledgeBaseIds,
+      // New comprehensive mode parameters
+      mode, // 'standard' | 'comprehensive'
+      courseOutline,
+      subjectIds
+    } = req.body;
+
+    // Check for comprehensive mode
+    if (mode === 'comprehensive') {
+      if (!courseOutline || !subjectIds) {
+        return res.status(400).json({
+          error: 'Comprehensive mode requires courseOutline and subjectIds'
+        });
+      }
+
+      console.log(`🎓 Generating COMPREHENSIVE lesson: "${courseOutline.title}" with ${subjectIds.length} subjects`);
+
+      const comprehensiveLesson = await enhancedLessonGenerator.generateComprehensiveLesson(
+        courseOutline,
+        subjectIds,
+        (teachingStyle as 'socratic' | 'direct' | 'constructivist' | 'encouraging') || 'direct'
+      );
+
+      res.json({
+        success: true,
+        lesson: comprehensiveLesson,
+        teachingStyle: teachingStyle || 'direct',
+        mode: 'comprehensive',
+        subjectIds,
+        sourcesUsed: {
+          totalReferences: comprehensiveLesson.knowledgeBaseContext?.references?.length || 0,
+          prescribedBooks: [], // TODO: Track these based on document type
+          recommendedBooks: []
+        }
+      });
+
+      return;
+    }
+
+    // Standard mode (existing functionality)
+    if (!chapterId || !chapterContent) {
+      return res.status(400).json({ error: 'chapterId and chapterContent are required for standard mode' });
+    }
+
+    console.log(`🎓 Generating KB-enhanced lesson with ${teachingStyle || 'direct'} style...`);
+
+    const enhancedLesson = await enhancedLessonGenerator.generateEnhancedLessonWithKB(
+      chapterId,
+      chapterTitle || 'Chapter',
+      chapterContent,
+      (teachingStyle as 'socratic' | 'direct' | 'constructivist' | 'encouraging') || 'direct',
+      knowledgeBaseIds || []
+    );
+
+    res.json({
+      success: true,
+      lesson: enhancedLesson,
+      teachingStyle: teachingStyle || 'direct',
+      mode: 'standard',
+      knowledgeBaseIds: knowledgeBaseIds || []
+    });
+
+  } catch (error: any) {
+    console.error('Error generating KB-enhanced lesson:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Parse free-form course outline and extract structured topics
+router.post('/parse-course-outline', async (req, res) => {
+  try {
+    const { outlineText } = req.body;
+
+    if (!outlineText) {
+      return res.status(400).json({ error: 'outlineText is required' });
+    }
+
+    console.log('📝 Parsing course outline...');
+
+    const prompt = `
+      Parse this free-form course outline and extract a structured format.
+
+      Extract:
+      1. Course title (if mentioned)
+      2. Course description (if mentioned)
+      3. List of topics with descriptions
+
+      Course Outline:
+      ${outlineText}
+
+      Return as JSON:
+      {
+        "title": "Course Title",
+        "description": "Course description or summary",
+        "topics": [
+          {
+            "title": "Topic Title",
+            "description": "Brief description of what this topic covers",
+            "keyPoints": ["point1", "point2", "point3"]
+          }
+        ]
+      }
+
+      If you cannot determine title/description, use:
+      - title: "Course from Outline"
+      - description: "A comprehensive course covering the following topics"
+    `;
+
+    try {
+      const response = await llmService.complete({
+        prompt,
+        maxTokens: 1500,
+        temperature: 0.3 // Lower temperature for more consistent parsing
+      });
+
+      const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        res.json({
+          success: true,
+          courseOutline: parsed
+        });
+      } else {
+        throw new Error('Failed to parse response');
+      }
+    } catch (error: any) {
+      console.error('Error parsing course outline:', error);
+      res.status(500).json({ error: 'Failed to parse course outline' });
+    }
+
+  } catch (error: any) {
+    console.error('Error in parse-course-outline:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save enhanced lesson
+router.post('/save-enhanced-lesson', async (req, res) => {
+  try {
+    const {
+      userId,
+      chapterId,
+      chapterTitle,
+      teachingStyle,
+      enhancedSections,
+      learningObjectives,
+      keyVocabulary,
+      summary,
+      quickQuiz,
+      knowledgeBaseIds,
+      knowledgeBaseContext,
+      ttsEnabled
+    } = req.body;
+
+    if (!userId || !chapterId || !enhancedSections) {
+      return res.status(400).json({ error: 'userId, chapterId, and enhancedSections are required' });
+    }
+
+    const { EnhancedLessonService } = await import('../services/learning/enhancedLessonService');
+    const service = new EnhancedLessonService();
+
+    const savedLesson = await service.saveEnhancedLesson({
+      user_id: userId,
+      chapter_id: chapterId,
+      chapter_title: chapterTitle || 'Chapter',
+      teaching_style: teachingStyle as 'socratic' | 'direct' | 'constructivist' | 'encouraging',
+      enhanced_sections: enhancedSections,
+      learning_objectives: learningObjectives || [],
+      key_vocabulary: keyVocabulary || [],
+      summary: summary || '',
+      quick_quiz: quickQuiz || [],
+      knowledge_base_ids: knowledgeBaseIds || [],
+      knowledge_base_context: knowledgeBaseContext || { context: '', references: [] },
+      tts_enabled: ttsEnabled !== false, // Default to true
+      is_favorite: false,
+      view_count: 0
+    });
+
+    res.json({
+      success: true,
+      lesson: savedLesson
+    });
+
+  } catch (error: any) {
+    console.error('Error saving enhanced lesson:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get saved enhanced lesson
+router.get('/saved-enhanced-lesson/:chapterId', async (req, res) => {
+  try {
+    const { chapterId } = req.params;
+    const { userId, teachingStyle } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const { EnhancedLessonService } = await import('../services/learning/enhancedLessonService');
+    const service = new EnhancedLessonService();
+
+    const lesson = await service.getEnhancedLesson(
+      userId as string,
+      chapterId,
+      (teachingStyle as 'socratic' | 'direct' | 'constructivist' | 'encouraging') || 'direct'
+    );
+
+    res.json({
+      success: true,
+      lesson
+    });
+
+  } catch (error: any) {
+    console.error('Error fetching saved enhanced lesson:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List saved enhanced lessons
+router.get('/saved-enhanced-lessons', async (req, res) => {
+  try {
+    const { userId, teachingStyle, chapterId, favoriteOnly } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const { EnhancedLessonService } = await import('../services/learning/enhancedLessonService');
+    const service = new EnhancedLessonService();
+
+    const lessons = await service.listEnhancedLessons(userId as string, {
+      teachingStyle: teachingStyle as string,
+      chapterId: chapterId as string,
+      favoriteOnly: favoriteOnly === 'true'
+    });
+
+    res.json({
+      success: true,
+      lessons
+    });
+
+  } catch (error: any) {
+    console.error('Error listing saved enhanced lessons:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle favorite status
+router.post('/enhanced-lesson/:lessonId/toggle-favorite', async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const { EnhancedLessonService } = await import('../services/learning/enhancedLessonService');
+    const service = new EnhancedLessonService();
+
+    const lesson = await service.toggleFavorite(lessonId, userId);
+
+    res.json({
+      success: true,
+      lesson
+    });
+
+  } catch (error: any) {
+    console.error('Error toggling favorite:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Regenerate TTS for a saved lesson
+router.post('/enhanced-lesson/:lessonId/regenerate-tts', async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const { EnhancedLessonService } = await import('../services/learning/enhancedLessonService');
+    const service = new EnhancedLessonService();
+
+    const result = await service.regenerateTTS(lessonId, userId);
+
+    res.json({
+      success: true,
+      audioUrl: result.audioUrl,
+      duration: result.duration
+    });
+
+  } catch (error: any) {
+    console.error('Error regenerating TTS:', error);
     res.status(500).json({ error: error.message });
   }
 });

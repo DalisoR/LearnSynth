@@ -462,10 +462,45 @@ learnsynth/
 
 ### Prerequisites
 - Node.js 18+
+- Docker and Docker Compose (recommended)
 - OpenAI API Key
 - Supabase Account
 
-### Installation
+### Option 1: Docker Setup (Recommended)
+
+1. **Clone the repository**
+```bash
+git clone <repository-url>
+cd learnsynth
+```
+
+2. **Configure Environment Variables**
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your OpenAI API key:
+```
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+3. **Start all services with Docker**
+```bash
+docker-compose up
+```
+
+This will start:
+- PostgreSQL database on port 5432
+- Redis cache on port 6379
+- Backend API on port 4000
+- Frontend React app on port 5173
+
+4. **Access the application**
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:4000
+- Database: localhost:5432 (postgres/postgres)
+
+### Option 2: Manual Setup
 
 1. **Clone the repository**
 ```bash
@@ -514,7 +549,7 @@ npm start
 ```
 
 7. **Open Application**
-Navigate to `http://localhost:3000`
+Navigate to `http://localhost:5173`
 
 ## 🧪 Testing Guide
 

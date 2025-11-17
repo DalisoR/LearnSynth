@@ -329,16 +329,48 @@ export class AIQuizEngine {
       }
 
       let isCorrect = false;
+      let similarityScore = 0;
 
       if (question.type === 'multiple-choice') {
+        // Multiple choice: exact index match
         isCorrect = userAnswer.answer === question.correctAnswer;
+        similarityScore = isCorrect ? 100 : 0;
+      } else if (question.type === 'true-false') {
+        // True/False: check boolean value
+        const userAnswerStr = String(userAnswer.answer).toLowerCase().trim();
+        const correctAnswerStr = String(question.correctAnswer).toLowerCase().trim();
+        isCorrect = userAnswerStr === correctAnswerStr;
+        similarityScore = isCorrect ? 100 : 0;
+      } else if (question.type === 'short-answer') {
+        // SHORT ANSWER: Use intelligent semantic matching
+        const result = this.gradeShortAnswer(
+          String(userAnswer.answer),
+          String(question.correctAnswer)
+        );
+        isCorrect = result.isCorrect;
+        similarityScore = result.similarityScore;
       } else {
-        // For other types, do a simple string comparison (could be enhanced with NLP)
-        isCorrect = String(userAnswer.answer).toLowerCase() ===
-          String(question.correctAnswer).toLowerCase();
+        // Other types: intelligent semantic matching
+        const result = this.gradeShortAnswer(
+          String(userAnswer.answer),
+          String(question.correctAnswer)
+        );
+        isCorrect = result.isCorrect;
+        similarityScore = result.similarityScore;
       }
 
-      const pointsEarned = isCorrect ? question.points : 0;
+      // Award partial credit based on similarity score
+      let pointsEarned = 0;
+      if (similarityScore >= 90) {
+        pointsEarned = question.points; // Full points for excellent match
+      } else if (similarityScore >= 70) {
+        pointsEarned = Math.floor(question.points * 0.8); // 80% for good match
+      } else if (similarityScore >= 50) {
+        pointsEarned = Math.floor(question.points * 0.5); // 50% for partial match
+      } else if (similarityScore >= 30) {
+        pointsEarned = Math.floor(question.points * 0.2); // 20% for weak match
+      }
+
       earnedPoints += pointsEarned;
 
       return {
@@ -412,6 +444,206 @@ export class AIQuizEngine {
       adaptive: true,
       createdAt: new Date(quiz.created_at)
     };
+  }
+
+  /**
+   * Intelligently grade short answer questions using semantic similarity
+   * Not just exact matching - understands concepts and ideas
+   */
+  private gradeShortAnswer(userAnswer: string, correctAnswer: string): {
+    isCorrect: boolean;
+    similarityScore: number; // 0-100
+  } {
+    // Normalize and clean answers
+    const user = this.normalizeText(userAnswer);
+    const correct = this.normalizeText(correctAnswer);
+
+    // If they're essentially the same, return perfect score
+    if (user === correct) {
+      return { isCorrect: true, similarityScore: 100 };
+    }
+
+    // Calculate multiple similarity metrics
+    const metrics = {
+      tokenOverlap: this.calculateTokenOverlap(user, correct),
+      longestCommonSubsequence: this.calculateLCS(user, correct),
+      conceptualSimilarity: this.calculateConceptualSimilarity(user, correct),
+      fuzzyMatch: this.calculateFuzzySimilarity(user, correct)
+    };
+
+    // Weight the metrics (conceptual similarity is most important)
+    const weightedScore =
+      metrics.tokenOverlap * 0.25 +
+      metrics.longestCommonSubsequence * 0.20 +
+      metrics.conceptualSimilarity * 0.35 +
+      metrics.fuzzyMatch * 0.20;
+
+    // Consider it correct if similarity is >= 65%
+    const isCorrect = weightedScore >= 65;
+
+    return {
+      isCorrect,
+      similarityScore: Math.round(weightedScore)
+    };
+  }
+
+  /**
+   * Normalize text for comparison
+   */
+  private normalizeText(text: string): string {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s]/g, ' ') // Remove punctuation
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+  }
+
+  /**
+   * Calculate token overlap similarity (Jaccard index)
+   */
+  private calculateTokenOverlap(user: string, correct: string): number {
+    const userTokens = new Set(user.split(' ').filter(t => t.length > 2));
+    const correctTokens = new Set(correct.split(' ').filter(t => t.length > 2));
+
+    const intersection = new Set([...userTokens].filter(t => correctTokens.has(t)));
+    const union = new Set([...userTokens, ...correctTokens]);
+
+    if (union.size === 0) return 0;
+    return (intersection.size / union.size) * 100;
+  }
+
+  /**
+   * Calculate Longest Common Subsequence similarity
+   */
+  private calculateLCS(user: string, correct: string): number {
+    const userWords = user.split(' ');
+    const correctWords = correct.split(' ');
+
+    const dp: number[][] = Array(userWords.length + 1)
+      .fill(null)
+      .map(() => Array(correctWords.length + 1).fill(0));
+
+    for (let i = 1; i <= userWords.length; i++) {
+      for (let j = 1; j <= correctWords.length; j++) {
+        if (userWords[i - 1] === correctWords[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+    }
+
+    const lcsLength = dp[userWords.length][correctWords.length];
+    const maxLength = Math.max(userWords.length, correctWords.length);
+
+    return maxLength > 0 ? (lcsLength / maxLength) * 100 : 0;
+  }
+
+  /**
+   * Calculate conceptual similarity based on synonym matching
+   */
+  private calculateConceptualSimilarity(user: string, correct: string): number {
+    const userTokens = user.split(' ').filter(t => t.length > 2);
+    const correctTokens = correct.split(' ').filter(t => t.length > 2);
+
+    let matchCount = 0;
+    let totalChecks = 0;
+
+    // Check each user token against correct tokens
+    for (const userToken of userTokens) {
+      let bestMatch = false;
+      let bestSimilarity = 0;
+
+      for (const correctToken of correctTokens) {
+        // Exact match
+        if (userToken === correctToken) {
+          bestMatch = true;
+          break;
+        }
+
+        // Check for substring match (handles plurals, variations)
+        if (userToken.includes(correctToken) || correctToken.includes(userToken)) {
+          const similarity = this.getSubstringSimilarity(userToken, correctToken);
+          bestSimilarity = Math.max(bestSimilarity, similarity);
+        }
+
+        // Check for edit distance (typos, small differences)
+        const editDistance = this.getEditDistance(userToken, correctToken);
+        const maxLength = Math.max(userToken.length, correctToken.length);
+        const similarity = ((maxLength - editDistance) / maxLength) * 100;
+
+        if (similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+        }
+      }
+
+      totalChecks++;
+
+      if (bestMatch || bestSimilarity >= 85) {
+        matchCount++;
+      }
+    }
+
+    return totalChecks > 0 ? (matchCount / totalChecks) * 100 : 0;
+  }
+
+  /**
+   * Calculate fuzzy string similarity (Levenshtein-based)
+   */
+  private calculateFuzzySimilarity(user: string, correct: string): number {
+    const editDistance = this.getEditDistance(user, correct);
+    const maxLength = Math.max(user.length, correct.length);
+
+    if (maxLength === 0) return 100;
+    return ((maxLength - editDistance) / maxLength) * 100;
+  }
+
+  /**
+   * Get edit distance between two strings (Levenshtein distance)
+   */
+  private getEditDistance(str1: string, str2: string): number {
+    const matrix: number[][] = [];
+
+    for (let i = 0; i <= str2.length; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= str1.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= str2.length; i++) {
+      for (let j = 1; j <= str1.length; j++) {
+        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1, // insertion
+            matrix[i - 1][j] // deletion
+          );
+        }
+      }
+    }
+
+    return matrix[str2.length][str1.length];
+  }
+
+  /**
+   * Calculate substring similarity
+   */
+  private getSubstringSimilarity(str1: string, str2: string): number {
+    if (str1 === str2) return 100;
+
+    const shorter = str1.length < str2.length ? str1 : str2;
+    const longer = str1.length < str2.length ? str2 : str1;
+
+    if (longer.includes(shorter)) {
+      return (shorter.length / longer.length) * 100;
+    }
+
+    return 0;
   }
 
   /**

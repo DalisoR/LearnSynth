@@ -151,10 +151,10 @@ const ProgressAnalytics: React.FC = () => {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Learning Analytics</h1>
-        <p className="text-gray-600">Track your progress and identify areas for improvement</p>
+    <div className="container mx-auto px-3 md:px-4 py-4 md:py-8">
+      <div className="mb-6 md:mb-8">
+        <h1 className="text-2xl md:text-3xl font-bold mb-2">Learning Analytics</h1>
+        <p className="text-gray-600 text-sm md:text-base">Track your progress and identify areas for improvement</p>
       </div>
 
       {/* Streak Card */}
